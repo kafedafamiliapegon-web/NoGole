@@ -7,8 +7,6 @@ type Product = {
   id: string;
   name: string;
   category: string | null;
-  description?: string | null;
-  image_url?: string | null;
   price: number | string;
   stock?: number | string | null;
   minimum_stock?: number | string | null;
@@ -72,6 +70,41 @@ function numero(valor: string) {
   return Number(valor.replace(",", "."));
 }
 
+function estoqueDisponivel(product: Product) {
+  return Number(product.stock ?? 0) > 0;
+}
+
+function podeUsarQuantidade(product: Product | null | undefined, qty: number) {
+  if (!product) return true;
+  return qty <= Number(product.stock ?? 0);
+}
+
+function acaoLog(action: string) {
+  const labels: Record<string, string> = {
+    open_comanda: "Comanda aberta",
+    add_item: "Produto adicionado",
+    increase_item: "Quantidade aumentada",
+    decrease_item: "Quantidade diminuída",
+    remove_item: "Produto removido",
+    close_comanda: "Comanda fechada",
+    cancel_comanda: "Comanda cancelada",
+    create_product: "Produto cadastrado",
+    update_product: "Produto atualizado",
+  };
+
+  return labels[action] || "Ação registrada";
+}
+
+function statusComanda(status: string) {
+  const labels: Record<string, string> = {
+    open: "Aberta",
+    closed: "Fechada",
+    cancelled: "Cancelada",
+  };
+
+  return labels[status] || "Registrada";
+}
+
 function dataHora(data?: string | null) {
   if (!data) return "Sem data";
 
@@ -83,17 +116,22 @@ function dataHora(data?: string | null) {
   });
 }
 
-function gerarNomeSeguroArquivo(file: File) {
-  const extensao = file.name.split(".").pop()?.toLowerCase() || "png";
-  const nomeBase = file.name
-    .replace(/\.[^/.]+$/, "")
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/(^-|-$)/g, "");
+function BrandLogo({ compact = false }: { compact?: boolean }) {
+  const [logoOk, setLogoOk] = useState(true);
 
-  return `produto-${Date.now()}-${nomeBase || "imagem"}.${extensao}`;
+  return (
+    <div className={compact ? "brand-logo compact" : "brand-logo"}>
+      {logoOk ? (
+        <img
+          src="/logo.png"
+          alt="NoGole"
+          onError={() => setLogoOk(false)}
+        />
+      ) : (
+        <span>NoGole</span>
+      )}
+    </div>
+  );
 }
 
 export default function Home() {
@@ -109,6 +147,9 @@ export default function Home() {
   const [historicoAtual, setHistoricoAtual] = useState<Comanda | null>(null);
   const [itens, setItens] = useState<ComandaItem[]>([]);
   const [itensHistorico, setItensHistorico] = useState<ComandaItem[]>([]);
+  const [contagemHistorico, setContagemHistorico] = useState<Record<string, number>>(
+    {}
+  );
 
   const [products, setProducts] = useState<Product[]>([]);
   const [logs, setLogs] = useState<SecurityLog[]>([]);
@@ -123,8 +164,10 @@ export default function Home() {
   const [produtoPreco, setProdutoPreco] = useState("");
   const [produtoEstoque, setProdutoEstoque] = useState("");
   const [produtoMinimo, setProdutoMinimo] = useState("");
-  const [produtoDescricao, setProdutoDescricao] = useState("");
-  const [produtoArquivo, setProdutoArquivo] = useState<File | null>(null);
+  const [produtoEmEdicao, setProdutoEmEdicao] = useState<Product | null>(null);
+  const [mostrarFormularioProduto, setMostrarFormularioProduto] = useState(false);
+  const [buscaGerenciarProduto, setBuscaGerenciarProduto] = useState("");
+  const [categoriaGerenciarProduto, setCategoriaGerenciarProduto] = useState("Todos");
 
   const totalItens = useMemo(
     () => itens.reduce((acc, item) => acc + item.qty * Number(item.price || 0), 0),
@@ -158,6 +201,21 @@ export default function Home() {
     });
   }, [products, buscaProduto, categoriaAtual]);
 
+  const produtosGerenciados = useMemo(() => {
+    return products.filter((product) => {
+      const buscaOk = product.name
+        .toLowerCase()
+        .includes(buscaGerenciarProduto.toLowerCase());
+      const categoriaOk =
+        categoriaGerenciarProduto === "Todos" ||
+        product.category === categoriaGerenciarProduto;
+
+      return buscaOk && categoriaOk;
+    });
+  }, [products, buscaGerenciarProduto, categoriaGerenciarProduto]);
+
+  const tituloAba = tabs.find((tab) => tab.id === aba)?.label || "Comandas";
+
   async function registrarLog(
     action: string,
     description: string,
@@ -175,8 +233,8 @@ export default function Home() {
     });
   }
 
-  async function carregarTudo() {
-    setCarregando(true);
+  async function carregarTudo(silencioso = false) {
+    if (!silencioso) setCarregando(true);
     setErro("");
 
     const [abertasRes, historicoRes, productsRes, logsRes] = await Promise.all([
@@ -208,15 +266,37 @@ export default function Home() {
 
     if (error) {
       setErro(error.message);
-      setCarregando(false);
+      if (!silencioso) setCarregando(false);
       return;
     }
 
     const abertas = (abertasRes.data || []) as Comanda[];
+    const historicoCarregado = (historicoRes.data || []) as Comanda[];
     setCommandas(abertas);
-    setHistorico((historicoRes.data || []) as Comanda[]);
+    setHistorico(historicoCarregado);
     setProducts((productsRes.data || []) as Product[]);
     setLogs((logsRes.data || []) as SecurityLog[]);
+
+    if (historicoCarregado.length > 0) {
+      const ids = historicoCarregado.map((comanda) => comanda.id);
+      const { data: itensHistoricoRes } = await supabase
+        .from("comanda_items")
+        .select("comanda_id")
+        .in("comanda_id", ids);
+
+      const contagem = (itensHistoricoRes || []).reduce<Record<string, number>>(
+        (acc, item) => {
+          const id = item.comanda_id as string;
+          acc[id] = (acc[id] || 0) + 1;
+          return acc;
+        },
+        {}
+      );
+
+      setContagemHistorico(contagem);
+    } else {
+      setContagemHistorico({});
+    }
 
     if (comandaAtual) {
       const atualizada = abertas.find((item) => item.id === comandaAtual.id);
@@ -224,7 +304,7 @@ export default function Home() {
       if (!atualizada) setItens([]);
     }
 
-    setCarregando(false);
+    if (!silencioso) setCarregando(false);
   }
 
   async function carregarItens(comandaId: string, destino: "atual" | "historico") {
@@ -266,6 +346,27 @@ export default function Home() {
       return;
     }
 
+    const { data: existenteNoBanco, error: existenteError } = await supabase
+      .from("commandas")
+      .select("*")
+      .eq("status", "open")
+      .ilike("name", nome)
+      .limit(1)
+      .maybeSingle();
+
+    if (existenteError) {
+      setErro(existenteError.message);
+      return;
+    }
+
+    if (existenteNoBanco) {
+      setComandaAtual(existenteNoBanco as Comanda);
+      setNomeComanda("");
+      await carregarItens(existenteNoBanco.id, "atual");
+      await carregarTudo(true);
+      return;
+    }
+
     const { data, error } = await supabase
       .from("commandas")
       .insert({
@@ -300,9 +401,19 @@ export default function Home() {
       return;
     }
 
+    if (!estoqueDisponivel(produto)) {
+      alert(`${produto.name} está sem estoque.`);
+      return;
+    }
+
     const itemAtual = itens.find((item) => item.product_id === produto.id);
 
     if (itemAtual) {
+      if (!podeUsarQuantidade(produto, itemAtual.qty + 1)) {
+        alert(`Estoque insuficiente para ${produto.name}.`);
+        return;
+      }
+
       await atualizarQuantidade(
         itemAtual,
         itemAtual.qty + 1,
@@ -348,6 +459,11 @@ export default function Home() {
 
     if (qty <= 0) {
       await removerItem(item, false);
+      return;
+    }
+
+    if (!podeUsarQuantidade(item.products, qty)) {
+      alert(`Estoque insuficiente para ${item.products?.name || "produto"}.`);
       return;
     }
 
@@ -486,6 +602,30 @@ export default function Home() {
     await carregarTudo();
   }
 
+  function limparFormularioProduto() {
+    setProdutoNome("");
+    setProdutoCategoria("Diversos");
+    setProdutoPreco("");
+    setProdutoEstoque("");
+    setProdutoMinimo("");
+    setProdutoEmEdicao(null);
+  }
+
+  function abrirCadastroProduto() {
+    limparFormularioProduto();
+    setMostrarFormularioProduto(true);
+  }
+
+  function editarProduto(product: Product) {
+    setProdutoEmEdicao(product);
+    setProdutoNome(product.name);
+    setProdutoCategoria(product.category || "Diversos");
+    setProdutoPreco(String(product.price ?? "").replace(".", ","));
+    setProdutoEstoque(String(product.stock ?? 0));
+    setProdutoMinimo(String(product.minimum_stock ?? 0));
+    setMostrarFormularioProduto(true);
+  }
+
   async function salvarProduto() {
     const nome = produtoNome.trim();
 
@@ -499,62 +639,51 @@ export default function Home() {
       return;
     }
 
-    let imageUrl: string | null = null;
+    const preco = numero(produtoPreco);
 
-    if (produtoArquivo) {
-      const tiposPermitidos = ["image/png", "image/jpeg", "image/webp"];
-
-      if (!tiposPermitidos.includes(produtoArquivo.type)) {
-        alert("Imagem inválida. Use PNG, JPG/JPEG ou WEBP.");
-        return;
-      }
-
-      if (produtoArquivo.size > 5 * 1024 * 1024) {
-        alert("Imagem muito grande. Use até 5MB.");
-        return;
-      }
-
-      const nomeArquivo = gerarNomeSeguroArquivo(produtoArquivo);
-      const { error: uploadError } = await supabase.storage
-        .from("products")
-        .upload(nomeArquivo, produtoArquivo);
-
-      if (uploadError) {
-        setErro(uploadError.message);
-        return;
-      }
-
-      imageUrl = supabase.storage.from("products").getPublicUrl(nomeArquivo).data
-        .publicUrl;
+    if (!Number.isFinite(preco) || preco <= 0) {
+      alert("Digite um preço válido.");
+      return;
     }
 
-    const { error } = await supabase.from("products").insert({
+    const payload = {
       name: nome,
       category: produtoCategoria,
-      description: produtoDescricao.trim() || null,
-      price: numero(produtoPreco),
+      price: preco,
       stock: Number(produtoEstoque || 0),
       minimum_stock: Number(produtoMinimo || 0),
-      image_url: imageUrl,
       active: true,
-      created_by_name: operador,
       updated_by_name: operador,
-    });
+    };
+
+    const { error } = produtoEmEdicao
+      ? await supabase.from("products").update(payload).eq("id", produtoEmEdicao.id)
+      : await supabase.from("products").insert({
+          ...payload,
+          created_by_name: operador,
+        });
 
     if (error) {
       setErro(error.message);
       return;
     }
 
-    await registrarLog("create_product", `${operador} cadastrou o produto ${nome}`);
+    await registrarLog(
+      produtoEmEdicao ? "update_product" : "create_product",
+      produtoEmEdicao
+        ? `${operador} reajustou o produto ${nome}`
+        : `${operador} cadastrou o produto ${nome}`,
+      "products",
+      produtoEmEdicao?.id,
+      {
+        price: preco,
+        stock: Number(produtoEstoque || 0),
+        minimum_stock: Number(produtoMinimo || 0),
+      }
+    );
 
-    setProdutoNome("");
-    setProdutoCategoria("Diversos");
-    setProdutoPreco("");
-    setProdutoEstoque("");
-    setProdutoMinimo("");
-    setProdutoDescricao("");
-    setProdutoArquivo(null);
+    limparFormularioProduto();
+    setMostrarFormularioProduto(false);
     await carregarTudo();
   }
 
@@ -598,13 +727,13 @@ export default function Home() {
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "commandas" },
-        () => carregarTudo()
+        () => carregarTudo(true)
       )
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "comanda_items" },
         () => {
-          carregarTudo();
+          carregarTudo(true);
           if (comandaAtual?.id) carregarItens(comandaAtual.id, "atual");
           if (historicoAtual?.id) carregarItens(historicoAtual.id, "historico");
         }
@@ -612,12 +741,12 @@ export default function Home() {
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "products" },
-        () => carregarTudo()
+        () => carregarTudo(true)
       )
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "security_logs" },
-        () => carregarTudo()
+        () => carregarTudo(true)
       )
       .subscribe();
 
@@ -630,8 +759,8 @@ export default function Home() {
     return (
       <main className="login-screen">
         <section className="login-card">
-          <div className="brand-mark">NG</div>
-          <p className="login-kicker">NoGole Comandas</p>
+          <BrandLogo />
+          <p className="login-kicker">NoGole</p>
           <h1>Quem está usando?</h1>
           <div className="login-form">
             <input
@@ -653,9 +782,12 @@ export default function Home() {
   return (
     <main className="app-shell">
       <header className="topbar">
-        <div>
-          <span className="brand-chip">NoGole</span>
-          <h1>Comandas</h1>
+        <div className="topbar-brand">
+          <BrandLogo compact />
+          <div>
+            <span className="brand-chip">NoGole</span>
+            <h1>{tituloAba}</h1>
+          </div>
         </div>
         <button className="operator-button" onClick={trocarOperador}>
           {operador}
@@ -815,22 +947,30 @@ export default function Home() {
                     <div className="empty-state">Nenhum produto encontrado.</div>
                   )}
 
-                  {produtosFiltrados.map((product) => (
-                    <button
-                      key={product.id}
-                      className="product-card"
-                      onClick={() => adicionarProduto(product)}
-                    >
-                      {product.image_url ? (
-                        <img src={product.image_url} alt={product.name} />
-                      ) : (
-                        <span className="image-placeholder">Sem imagem</span>
-                      )}
-                      <strong>{product.name}</strong>
-                      <small>{product.category || "Diversos"}</small>
-                      <b>{dinheiro(product.price)}</b>
-                    </button>
-                  ))}
+                  {produtosFiltrados.map((product) => {
+                    const disponivel = estoqueDisponivel(product);
+
+                    return (
+                      <button
+                        key={product.id}
+                        className={`product-card ${disponivel ? "" : "unavailable"}`}
+                        onClick={() => adicionarProduto(product)}
+                        disabled={!disponivel}
+                      >
+                        <span>
+                          <strong>{product.name}</strong>
+                          <small>{product.category || "Diversos"}</small>
+                          <small>
+                            {disponivel
+                              ? `Estoque: ${product.stock ?? 0}`
+                              : "Sem estoque"}
+                          </small>
+                        </span>
+                        <b>{dinheiro(product.price)}</b>
+                        <i>{disponivel ? "+" : "0"}</i>
+                      </button>
+                    );
+                  })}
                 </div>
               </section>
             </section>
@@ -840,65 +980,99 @@ export default function Home() {
 
       {aba === "produtos" && (
         <section className="view-stack">
-          <section className="form-card">
-              <h2>Cadastrar produto</h2>
+          <section className="manage-products-card">
+            <div>
+              <h2>Produtos cadastrados</h2>
+              <p>Busque, confira estoque e reajuste preços rapidamente.</p>
+            </div>
+            <button onClick={abrirCadastroProduto}>Cadastrar produto</button>
+          </section>
+
+          <section className="product-tools">
             <input
-              value={produtoNome}
-              onChange={(event) => setProdutoNome(event.target.value)}
-              placeholder="Nome"
+              value={buscaGerenciarProduto}
+              onChange={(event) => setBuscaGerenciarProduto(event.target.value)}
+              placeholder="Buscar produto"
             />
             <select
-              value={produtoCategoria}
-              onChange={(event) => setProdutoCategoria(event.target.value)}
+              value={categoriaGerenciarProduto}
+              onChange={(event) => setCategoriaGerenciarProduto(event.target.value)}
             >
+              <option>Todos</option>
               {categorias.map((categoria) => (
                 <option key={categoria}>{categoria}</option>
               ))}
             </select>
-            <input
-              value={produtoPreco}
-              onChange={(event) => setProdutoPreco(event.target.value)}
-              placeholder="Preço. Ex: 8,00"
-            />
-            <input
-              value={produtoEstoque}
-              onChange={(event) => setProdutoEstoque(event.target.value)}
-              placeholder="Estoque"
-            />
-            <input
-              value={produtoMinimo}
-              onChange={(event) => setProdutoMinimo(event.target.value)}
-              placeholder="Estoque mínimo"
-            />
-            <textarea
-              value={produtoDescricao}
-              onChange={(event) => setProdutoDescricao(event.target.value)}
-              placeholder="Descrição"
-            />
-            <input
-              type="file"
-              accept="image/png,image/jpeg,image/webp"
-              onChange={(event) => setProdutoArquivo(event.target.files?.[0] || null)}
-            />
-            <button onClick={salvarProduto}>Salvar produto</button>
           </section>
 
+          {mostrarFormularioProduto && (
+            <section className="form-card product-editor">
+              <div className="form-title-row">
+                <h2>
+                  {produtoEmEdicao ? "Reajustar produto" : "Cadastrar produto"}
+                </h2>
+                <button
+                  className="soft-button"
+                  onClick={() => {
+                    limparFormularioProduto();
+                    setMostrarFormularioProduto(false);
+                  }}
+                >
+                  Fechar
+                </button>
+              </div>
+              <input
+                value={produtoNome}
+                onChange={(event) => setProdutoNome(event.target.value)}
+                placeholder="Nome"
+              />
+              <select
+                value={produtoCategoria}
+                onChange={(event) => setProdutoCategoria(event.target.value)}
+              >
+                {categorias.map((categoria) => (
+                  <option key={categoria}>{categoria}</option>
+                ))}
+              </select>
+              <input
+                value={produtoPreco}
+                onChange={(event) => setProdutoPreco(event.target.value)}
+                placeholder="Preço. Ex: 8,00"
+              />
+              <input
+                value={produtoEstoque}
+                onChange={(event) => setProdutoEstoque(event.target.value)}
+                placeholder="Estoque"
+              />
+              <input
+                value={produtoMinimo}
+                onChange={(event) => setProdutoMinimo(event.target.value)}
+                placeholder="Estoque mínimo"
+              />
+              <button onClick={salvarProduto}>
+                {produtoEmEdicao ? "Salvar reajuste" : "Salvar produto"}
+              </button>
+            </section>
+          )}
+
           <section className="product-list">
-            {products.map((product) => (
+            {produtosGerenciados.length === 0 && (
+              <div className="empty-state">Nenhum produto encontrado.</div>
+            )}
+
+            {produtosGerenciados.map((product) => (
               <article key={product.id}>
-                {product.image_url ? (
-                  <img src={product.image_url} alt={product.name} />
-                ) : (
-                  <span />
-                )}
                 <div>
                   <strong>{product.name}</strong>
                   <small>
-                    {product.category || "Diversos"} - Estoque:{" "}
-                    {product.stock ?? 0}
+                    {product.category || "Diversos"} - Estoque: {product.stock ?? 0}
+                  </small>
+                  <small>
+                    Estoque mínimo: {product.minimum_stock ?? 0}
                   </small>
                 </div>
                 <b>{dinheiro(product.price)}</b>
+                <button onClick={() => editarProduto(product)}>Editar</button>
               </article>
             ))}
           </section>
@@ -924,11 +1098,14 @@ export default function Home() {
                 <span>
                   <strong>{comanda.name}</strong>
                   <small>
-                    {comanda.status === "closed" ? "Fechada" : "Cancelada"} - abriu{" "}
-                    {dataHora(comanda.opened_at)} - fechou {dataHora(comanda.closed_at)}
+                    {statusComanda(comanda.status)} - {contagemHistorico[comanda.id] || 0} itens
                   </small>
                   <small>
-                    Por {comanda.opened_by_name || "sem nome"} /{" "}
+                    Abriu: {dataHora(comanda.opened_at)} -{" "}
+                    {comanda.opened_by_name || "sem nome"}
+                  </small>
+                  <small>
+                    Fechou/cancelou: {dataHora(comanda.closed_at)} -{" "}
                     {comanda.closed_by_name || "sem nome"}
                   </small>
                 </span>
@@ -939,14 +1116,28 @@ export default function Home() {
 
           {historicoAtual && (
             <section className="history-detail">
-              <div>
-                <h2>{historicoAtual.name}</h2>
-                <p>{historicoAtual.status === "closed" ? "Fechada" : "Cancelada"}</p>
+              <div className="history-detail-head">
+                <div>
+                  <h2>{historicoAtual.name}</h2>
+                  <p>{statusComanda(historicoAtual.status)}</p>
+                </div>
+                <button onClick={() => setHistoricoAtual(null)}>
+                  Fechar detalhes
+                </button>
+              </div>
+              <div className="history-facts">
+                <span>Abriu: {historicoAtual.opened_by_name || "sem nome"}</span>
+                <span>Fechou/cancelou: {historicoAtual.closed_by_name || "sem nome"}</span>
+                <span>Entrada: {dataHora(historicoAtual.opened_at)}</span>
+                <span>Saída: {dataHora(historicoAtual.closed_at)}</span>
               </div>
               {itensHistorico.map((item) => (
                 <div className="history-item" key={item.id}>
-                  <span>
-                    {item.qty}x {item.products?.name || "Produto"}
+                  <span className="history-item-name">
+                    <strong>{item.products?.name || "Produto"}</strong>
+                    <small>
+                      {item.qty} x {dinheiro(item.price)}
+                    </small>
                   </span>
                   <b>{dinheiro(item.qty * Number(item.price || 0))}</b>
                 </div>
@@ -966,6 +1157,7 @@ export default function Home() {
 
           {logs.map((log) => (
             <article key={log.id}>
+              <span className="log-action">{acaoLog(log.action)}</span>
               <strong>{log.description}</strong>
               <small>
                 {log.operator_name || "Sem operador"} - {dataHora(log.created_at)}
