@@ -220,7 +220,9 @@ textarea:focus {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin: -12px -12px 14px;
+  width: 100%;
+  max-width: 100%;
+  margin: 0 0 14px;
   padding: 14px;
   background:
     radial-gradient(circle at left top, rgba(249, 115, 22, 0.3), transparent 280px),
@@ -288,6 +290,7 @@ textarea:focus {
   border-radius: 26px;
   background: rgba(255, 255, 255, 0.94);
   box-shadow: var(--shadow);
+  overflow: hidden;
 }
 
 .action-card {
@@ -343,6 +346,7 @@ textarea:focus {
   text-align: left;
   box-shadow: 0 10px 24px rgba(194, 65, 12, 0.08);
   transition: transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease;
+  overflow: hidden;
 }
 
 .comanda-row {
@@ -604,6 +608,7 @@ textarea:focus {
   padding: 13px;
   text-align: left;
   box-shadow: 0 9px 22px rgba(194, 65, 12, 0.07);
+  overflow: hidden;
 }
 
 .product-card strong {
@@ -813,9 +818,9 @@ textarea:focus {
 
 .loading-pill {
   position: fixed;
-  left: 50%;
+  left: 12px;
+  right: 12px;
   bottom: 84px;
-  transform: translateX(-50%);
   z-index: 20;
   border-radius: 999px;
   background: var(--ink);
@@ -824,6 +829,7 @@ textarea:focus {
   box-shadow: 0 12px 34px rgba(0, 0, 0, 0.18);
   font-size: 12px;
   font-weight: 950;
+  text-align: center;
 }
 
 .bottom-nav {
@@ -833,7 +839,7 @@ textarea:focus {
   bottom: 12px;
   z-index: 10;
   width: auto;
-  max-width: 620px;
+  max-width: none;
   margin: 0 auto;
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -928,8 +934,9 @@ textarea:focus {
 
   .topbar {
     grid-template-columns: 1fr;
-    margin-left: -10px;
-    margin-right: -10px;
+    margin-left: 0;
+    margin-right: 0;
+    width: 100%;
   }
 
   .topbar-brand {
