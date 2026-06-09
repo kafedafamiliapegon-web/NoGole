@@ -72,8 +72,13 @@ function numero(valor: string) {
   return Number(valor.replace(",", "."));
 }
 
-function estoqueDisponivel(product: Product) {
-  return Number(product.stock ?? 0) > 0;
+function situacaoEstoque(product: Product) {
+  const stock = Number(product.stock ?? 0);
+
+  if (stock < 0) return "negativo";
+  if (stock === 0) return "zerado";
+
+  return "positivo";
 }
 
 function textoBusca(valor: string | number | null | undefined) {
@@ -95,7 +100,14 @@ function codigoSemZeros(valor: string | null | undefined) {
 
 function textoEstoque(product: Product) {
   const stock = Number(product.stock ?? 0);
-  return stock < 0 ? `Estoque negativo: ${stock}` : `Estoque: ${stock}`;
+  if (stock < 0) return `Estoque negativo: ${stock}`;
+  if (stock === 0) return "Estoque zerado";
+
+  return `Estoque: ${stock}`;
+}
+
+function precisaConferirEstoque(product: Product) {
+  return Number(product.stock ?? 0) <= 0;
 }
 
 function pontuarProduto(product: Product, busca: string) {
@@ -130,7 +142,10 @@ function pontuarProduto(product: Product, busca: string) {
 
 function podeUsarQuantidade(product: Product | null | undefined, qty: number) {
   if (!product) return true;
-  return qty <= Number(product.stock ?? 0);
+  const stock = Number(product.stock ?? 0);
+  if (stock <= 0) return true;
+
+  return qty <= stock;
 }
 
 function acaoLog(action: string) {
@@ -469,11 +484,6 @@ export default function Home() {
   async function adicionarProduto(produto: Product) {
     if (!comandaAtual) {
       alert("Selecione ou crie uma comanda primeiro.");
-      return;
-    }
-
-    if (!estoqueDisponivel(produto)) {
-      alert(`${produto.name} está sem estoque.`);
       return;
     }
 
@@ -1035,14 +1045,13 @@ export default function Home() {
                   )}
 
                   {produtosFiltrados.map((product) => {
-                    const disponivel = estoqueDisponivel(product);
+                    const estoqueStatus = situacaoEstoque(product);
 
                     return (
                       <button
                         key={product.id}
-                        className={`product-card ${disponivel ? "" : "unavailable"}`}
+                        className={`product-card stock-${estoqueStatus}`}
                         onClick={() => adicionarProduto(product)}
-                        disabled={!disponivel}
                       >
                         <span className="product-card-info">
                           <strong>{product.name}</strong>
@@ -1053,9 +1062,12 @@ export default function Home() {
                               : ""}
                           </small>
                           {product.barcode && <small>Barras: {product.barcode}</small>}
+                          {precisaConferirEstoque(product) && (
+                            <small className="stock-check">Conferir estoque físico</small>
+                          )}
                         </span>
                         <b>{dinheiro(product.price)}</b>
-                        <i>{disponivel ? "+" : "Sem estoque"}</i>
+                        <i>+</i>
                       </button>
                     );
                   })}
