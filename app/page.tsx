@@ -13,6 +13,8 @@ type Product = {
   active?: boolean | null;
   internal_code?: string | null;
   barcode?: string | null;
+  is_favorite?: boolean | null;
+  favorite_order?: number | string | null;
 };
 
 type Comanda = {
@@ -100,8 +102,8 @@ function codigoSemZeros(valor: string | null | undefined) {
 
 function textoEstoque(product: Product) {
   const stock = Number(product.stock ?? 0);
-  if (stock < 0) return `Estoque negativo: ${stock}`;
-  if (stock === 0) return "Estoque zerado";
+  if (stock < 0) return `Estoque negativo: ${stock} · Conferir físico`;
+  if (stock === 0) return "Estoque zerado · Conferir físico";
 
   return `Estoque: ${stock}`;
 }
@@ -159,6 +161,8 @@ function acaoLog(action: string) {
     cancel_comanda: "Comanda cancelada",
     create_product: "Produto cadastrado",
     update_product: "Produto atualizado",
+    favorite_product: "Produto favoritado",
+    unfavorite_product: "Produto removido dos favoritos",
   };
 
   return labels[action] || "Ação registrada";
@@ -286,6 +290,19 @@ export default function Home() {
       })
       .map(({ product }) => product);
   }, [products, buscaProduto, categoriaAtual]);
+
+  const produtosFavoritos = useMemo(() => {
+    return products
+      .filter((product) => product.is_favorite)
+      .sort((a, b) => {
+        const ordemA = Number(a.favorite_order ?? 999999);
+        const ordemB = Number(b.favorite_order ?? 999999);
+
+        if (ordemA !== ordemB) return ordemA - ordemB;
+
+        return a.name.localeCompare(b.name, "pt-BR");
+      });
+  }, [products]);
 
   const produtosGerenciados = useMemo(() => {
     return products.filter((product) => {
@@ -528,6 +545,45 @@ export default function Home() {
 
     await carregarItens(comandaAtual.id, "atual");
     await carregarTudo();
+  }
+
+  async function alternarFavorito(produto: Product) {
+    const favoritar = !produto.is_favorite;
+    const maiorOrdemFavorita = products.reduce((maior, item) => {
+      if (!item.is_favorite) return maior;
+
+      return Math.max(maior, Number(item.favorite_order ?? 0));
+    }, 0);
+
+    const { error } = await supabase
+      .from("products")
+      .update({
+        is_favorite: favoritar,
+        favorite_order: favoritar ? maiorOrdemFavorita + 1 : null,
+        updated_by_name: operador,
+      })
+      .eq("id", produto.id);
+
+    if (error) {
+      setErro(error.message);
+      return;
+    }
+
+    await registrarLog(
+      favoritar ? "favorite_product" : "unfavorite_product",
+      favoritar
+        ? `${operador} marcou ${produto.name} como favorito`
+        : `${operador} removeu ${produto.name} dos favoritos`,
+      "products",
+      produto.id,
+      {
+        product_id: produto.id,
+        product_name: produto.name,
+        is_favorite: favoritar,
+      }
+    );
+
+    await carregarTudo(true);
   }
 
   async function atualizarQuantidade(
@@ -1024,6 +1080,34 @@ export default function Home() {
                   </div>
                 </div>
 
+                {produtosFavoritos.length > 0 && (
+                  <section className="favorites-panel">
+                    <div className="favorites-head">
+                      <h4>Favoritos</h4>
+                      <span>{produtosFavoritos.length}</span>
+                    </div>
+                    <div className="favorites-strip">
+                      {produtosFavoritos.map((product) => {
+                        const estoqueStatus = situacaoEstoque(product);
+
+                        return (
+                          <button
+                            key={product.id}
+                            className={`favorite-product stock-${estoqueStatus}`}
+                            onClick={() => adicionarProduto(product)}
+                          >
+                            <strong>{product.name}</strong>
+                            <small>{dinheiro(product.price)}</small>
+                            {precisaConferirEstoque(product) && (
+                              <small>{textoEstoque(product)}</small>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </section>
+                )}
+
                 <div className="category-strip">
                   {["Todos", ...categorias].map((categoria) => (
                     <button
@@ -1048,11 +1132,34 @@ export default function Home() {
                     const estoqueStatus = situacaoEstoque(product);
 
                     return (
-                      <button
+                      <article
                         key={product.id}
                         className={`product-card stock-${estoqueStatus}`}
-                        onClick={() => adicionarProduto(product)}
                       >
+                        <button
+                          className={
+                            product.is_favorite
+                              ? "favorite-button active"
+                              : "favorite-button"
+                          }
+                          onClick={() => alternarFavorito(product)}
+                          aria-label={
+                            product.is_favorite
+                              ? `Remover ${product.name} dos favoritos`
+                              : `Marcar ${product.name} como favorito`
+                          }
+                          title={
+                            product.is_favorite
+                              ? "Remover dos favoritos"
+                              : "Marcar como favorito"
+                          }
+                        >
+                          {product.is_favorite ? "★" : "☆"}
+                        </button>
+                        <button
+                          className="product-add-area"
+                          onClick={() => adicionarProduto(product)}
+                        >
                         <span className="product-card-info">
                           <strong>{product.name}</strong>
                           <small>
@@ -1062,13 +1169,11 @@ export default function Home() {
                               : ""}
                           </small>
                           {product.barcode && <small>Barras: {product.barcode}</small>}
-                          {precisaConferirEstoque(product) && (
-                            <small className="stock-check">Conferir estoque físico</small>
-                          )}
                         </span>
                         <b>{dinheiro(product.price)}</b>
                         <i>+</i>
-                      </button>
+                        </button>
+                      </article>
                     );
                   })}
                 </div>
