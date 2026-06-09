@@ -11,6 +11,8 @@ type Product = {
   stock?: number | string | null;
   minimum_stock?: number | string | null;
   active?: boolean | null;
+  internal_code?: string | null;
+  barcode?: string | null;
 };
 
 type Comanda = {
@@ -72,6 +74,58 @@ function numero(valor: string) {
 
 function estoqueDisponivel(product: Product) {
   return Number(product.stock ?? 0) > 0;
+}
+
+function textoBusca(valor: string | number | null | undefined) {
+  return String(valor ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+}
+
+function tokensBusca(valor: string) {
+  return textoBusca(valor).split(/\s+/).filter(Boolean);
+}
+
+function codigoSemZeros(valor: string | null | undefined) {
+  const normalizado = textoBusca(valor).replace(/\D/g, "");
+  return normalizado.replace(/^0+/, "") || normalizado;
+}
+
+function textoEstoque(product: Product) {
+  const stock = Number(product.stock ?? 0);
+  return stock < 0 ? `Estoque negativo: ${stock}` : `Estoque: ${stock}`;
+}
+
+function pontuarProduto(product: Product, busca: string) {
+  const termo = textoBusca(busca);
+  if (!termo) return 10;
+
+  const name = textoBusca(product.name);
+  const category = textoBusca(product.category);
+  const internalCode = textoBusca(product.internal_code);
+  const barcode = textoBusca(product.barcode);
+  const codeNoZeros = codigoSemZeros(product.internal_code);
+  const barcodeNoZeros = codigoSemZeros(product.barcode);
+  const termoNumerico = termo.replace(/\D/g, "");
+  const buscaApenasNumeros = /^\d+$/.test(termo);
+  const termos = tokensBusca(busca);
+  const haystack = [name, category, internalCode, barcode, codeNoZeros, barcodeNoZeros]
+    .filter(Boolean)
+    .join(" ");
+
+  if (buscaApenasNumeros && internalCode && internalCode === termo) return 0;
+  if (buscaApenasNumeros && barcode && barcode === termoNumerico) return 1;
+  if (buscaApenasNumeros && codeNoZeros === termoNumerico) return 2;
+  if (buscaApenasNumeros && internalCode.endsWith(termoNumerico)) return 3;
+  if (name.startsWith(termo)) return 4;
+  if (termos.length > 0 && termos.every((token) => name.includes(token))) return 5;
+  if (termo && name.includes(termo)) return 6;
+  if (buscaApenasNumeros && termoNumerico && barcode.includes(termoNumerico)) return 7;
+  if (termos.length > 0 && termos.every((token) => haystack.includes(token))) return 8;
+
+  return null;
 }
 
 function podeUsarQuantidade(product: Product | null | undefined, qty: number) {
@@ -190,15 +244,32 @@ export default function Home() {
   }, [commandas, buscaComanda]);
 
   const produtosFiltrados = useMemo(() => {
-    return products.filter((product) => {
-      const buscaOk = product.name
-        .toLowerCase()
-        .includes(buscaProduto.toLowerCase());
+    const busca = buscaProduto.trim();
+
+    return products
+      .map((product) => ({
+        product,
+        score: pontuarProduto(product, busca),
+      }))
+      .filter(({ product, score }) => {
+        if (score === null) return false;
+
       const categoriaOk =
         categoriaAtual === "Todos" || product.category === categoriaAtual;
 
-      return buscaOk && categoriaOk;
-    });
+        return categoriaOk;
+      })
+      .sort((a, b) => {
+        if (a.score !== b.score) return Number(a.score) - Number(b.score);
+
+        const estoqueA = Number(a.product.stock ?? 0);
+        const estoqueB = Number(b.product.stock ?? 0);
+        if (estoqueA > 0 && estoqueB <= 0) return -1;
+        if (estoqueB > 0 && estoqueA <= 0) return 1;
+
+        return a.product.name.localeCompare(b.product.name, "pt-BR");
+      })
+      .map(({ product }) => product);
   }, [products, buscaProduto, categoriaAtual]);
 
   const produtosGerenciados = useMemo(() => {
@@ -923,11 +994,24 @@ export default function Home() {
               <section className="products-panel">
                 <div className="panel-title">
                   <h3>Adicionar produtos</h3>
-                  <input
-                    value={buscaProduto}
-                    onChange={(event) => setBuscaProduto(event.target.value)}
-                    placeholder="Buscar produto"
-                  />
+                  <div className="product-search">
+                    <input
+                      value={buscaProduto}
+                      onChange={(event) => setBuscaProduto(event.target.value)}
+                      placeholder="Buscar produto, código ou código de barras..."
+                      inputMode="search"
+                    />
+                    {buscaProduto && (
+                      <button
+                        className="clear-search-button"
+                        onClick={() => setBuscaProduto("")}
+                        aria-label="Limpar busca de produtos"
+                        title="Limpar busca"
+                      >
+                        ×
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 <div className="category-strip">
@@ -944,7 +1028,10 @@ export default function Home() {
 
                 <div className="product-grid">
                   {produtosFiltrados.length === 0 && (
-                    <div className="empty-state">Nenhum produto encontrado.</div>
+                    <div className="empty-state">
+                      <strong>Nenhum produto encontrado</strong>
+                      <small>Confira o nome, código ou código de barras.</small>
+                    </div>
                   )}
 
                   {produtosFiltrados.map((product) => {
@@ -957,17 +1044,18 @@ export default function Home() {
                         onClick={() => adicionarProduto(product)}
                         disabled={!disponivel}
                       >
-                        <span>
+                        <span className="product-card-info">
                           <strong>{product.name}</strong>
-                          <small>{product.category || "Diversos"}</small>
                           <small>
-                            {disponivel
-                              ? `Estoque: ${product.stock ?? 0}`
-                              : "Sem estoque"}
+                            {dinheiro(product.price)} · {textoEstoque(product)}
+                            {product.internal_code
+                              ? ` · Código: ${product.internal_code}`
+                              : ""}
                           </small>
+                          {product.barcode && <small>Barras: {product.barcode}</small>}
                         </span>
                         <b>{dinheiro(product.price)}</b>
-                        <i>{disponivel ? "+" : "0"}</i>
+                        <i>{disponivel ? "+" : "Sem estoque"}</i>
                       </button>
                     );
                   })}
